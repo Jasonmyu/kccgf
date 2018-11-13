@@ -17,7 +17,6 @@ def greens_b_vector_ea_rhf(cc, p, kp=None):
     vector1 = np.zeros((nvir),dtype=ds_type)
     vector2 = np.zeros((nkpts,nkpts,nocc,nvir,nvir),dtype=ds_type)
     if p < nocc:
-        # Changed both to minus
         vector1 += -cc.t1[kp,p,:]
         for ki in range(nkpts):
             for kj in range(nkpts):
@@ -40,7 +39,6 @@ def greens_e_vector_ea_rhf(cc, p, kp=None):
         l2 = np.conj(cc.t2)
 
     if p < nocc:
-        # Changed both to plus
         vector1 += l1[kp,p,:]
         for ki in range(nkpts):
             for kj in range(nkpts):
@@ -89,22 +87,18 @@ def greens_e_vector_ea_rhf(cc, p, kp=None):
 
 def greens_b_vector_ip_rhf(cc,p,kp=None):
     nkpts, nocc, nvir = cc.t1.shape
-
-    #Changed dimensions to account for kpts. 3 kpt indices?
-    # 1 nvir index only?
-    # b(ki, kk, i, k)     ki == kk == kp
     vector1 = np.zeros((nocc),dtype=complex)
     vector2 = np.zeros((nkpts,nkpts,nocc,nocc,nvir),dtype=complex)
 
-    #Added kp index for p<nocc. In else added for loop summing new v1 kp
-    #and over ki, kj, kp for v2
     if p < nocc:
         vector1[p] = 1.0
     else:
         vector1 += cc.t1[kp,:,p-nocc]
         for ki in range(nkpts):
             for kj in range(nkpts):
-                vector2[ki,kj] += cc.t2[ki,kj,kp,:,:,:,p-nocc]
+                kconserv = kpts_helper.get_kconserv(cc._scf.cell, cc.kpts)
+                ka = kconserv[ki,kj,kp]                              
+                vector2[ki,kj] += cc.t2[ki,kj,ka,:,:,:,p-nocc] 
     return eom_rccsd.amplitudes_to_vector_ip(vector1,vector2)
 
 def greens_e_vector_ip_rhf(cc,p,kp=None):
@@ -185,9 +179,9 @@ class OneParticleGF(object):
         if not isinstance(qs, collections.Iterable): qs = [qs]
         cc = self.cc
         print("solving ip portion")
-        Sw = initial_ip_guess(cc)
+        S0 = initial_ip_guess(cc)
         gfvals = np.zeros((len(kptlist), len(ps),len(qs),len(omegas)),dtype=complex)
-        for kp, ikpt in enumerate(kptlist): #put in k pt corresponding to zeroth index
+        for kp, ikpt in enumerate(kptlist): 
             e_vector=list()
             for q in qs:
                 e_vector.append(greens_e_vector_ip_rhf(cc,q,kp))
@@ -198,11 +192,17 @@ class OneParticleGF(object):
                 for iw, omega in enumerate(omegas):
                     invprecond_multiply = lambda x: x/(omega + diag + 1j*self.eta)
                     def matr_multiply(vector,args=None):
-                        return greens_func_multiply(cc.ipccsd_matvec, vector, omega + 1j*self.eta)
+                        return greens_func_multiply(cc.ipccsd_matvec, vector, omega + 1j*self.eta, kp)
                     size = len(b_vector)
                     Ax = spla.LinearOperator((size,size), matr_multiply)
                     mx = spla.LinearOperator((size,size), invprecond_multiply)
-                    Sw, info = spla.gmres(Ax, b_vector, x0=Sw, tol=1e-15, M=mx)
+
+                    start = time.time()
+                    Sw, info = spla.gcrotmk(Ax, b_vector, x0=S0, atol=0, tol=1e-2)
+                    end = time.time()
+                    print 'past gcrotmk with info and time',info,(end-start)
+                    sys.stdout.flush()
+
                     if info != 0:
                         raise RuntimeError
                     for iq,q in enumerate(qs):
@@ -216,7 +216,6 @@ class OneParticleGF(object):
         if not isinstance(ps, collections.Iterable): ps = [ps]
         if not isinstance(qs, collections.Iterable): qs = [qs]
         cc = self.cc
-        kptlist = [kptlist[0]]
         print("solving ea portion")
         S0 = initial_ea_guess(cc)
         gfvals = np.zeros((len(kptlist),len(ps),len(qs),len(omegas)),dtype=complex)
@@ -235,13 +234,15 @@ class OneParticleGF(object):
                     size = len(b_vector)
                     Ax = spla.LinearOperator((size,size), matr_multiply)
                     mx = spla.LinearOperator((size,size), invprecond_multiply)
-                    print 'got to gcrotmk with kp,iq,iw',kp,iq,iw
-                    sys.stdout.flush()
+                    
                     start = time.time()
-                    Sw, info = spla.gcrotmk(Ax, b_vector, x0=S0, atol=0, tol=1e-2) #M=mx)
+                    Sw, info = spla.gcrotmk(Ax, b_vector, x0=S0, atol=0, tol=1e-2)
                     end = time.time()
                     print 'past gcrotmk with info and time',info,(end-start)
                     sys.stdout.flush()
+                    
+                    if info != 0:
+                        raise RuntimeError
                     for ip,p in enumerate(ps):
                         gfvals[kp,ip,iq,iw] = np.dot(e_vector[ip],Sw)
         if len(ps) == 1 and len(qs) == 1:
