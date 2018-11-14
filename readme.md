@@ -1,4 +1,5 @@
 Periodic Coupled Cluster Greens Functions
+Now available on https://github.com/sunqm/pyscf under "kccgf" branch
 
 Files:
 
